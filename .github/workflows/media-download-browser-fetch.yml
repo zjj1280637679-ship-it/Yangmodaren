@@ -42,40 +42,46 @@ jobs:
                   result["analysis_text"] = page.locator("body").inner_text()[:5000]
                   page.screenshot(path="browser-artifacts/analyzed.png", full_page=True)
 
+                  context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://bilidl.com")
                   try:
-                      with page.expect_download(timeout=60000) as info:
-                          page.get_by_role("button", name=re.compile("^Download$", re.I)).first.click()
-                      download = info.value
-                      suggested = download.suggested_filename or "video.mp4"
-                      safe = re.sub(r'[^A-Za-z0-9._-]+', '_', suggested)
-                      path = os.path.join("downloaded", safe)
-                      download.save_as(path)
-                      result["download_mode"] = "browser_download"
-                      result["suggested_filename"] = suggested
-                      result["saved_path"] = path
-                      result["size_bytes"] = os.path.getsize(path)
+                      copy_btn = page.locator('button[aria-label^="Copy link:"]').first
+                      copy_btn.click(force=True)
+                      page.wait_for_timeout(500)
+                      link = page.evaluate("navigator.clipboard.readText()")
+                      result["copied_link"] = link
+                      with open("browser-artifacts/download-link.txt", "w", encoding="utf-8") as f:
+                          f.write(link or "")
+                      if link and link.startswith("http"):
+                          ua = page.evaluate("navigator.userAgent")
+                          r = context.request.get(link, headers={"Referer":"https://bilidl.com/","User-Agent":ua}, timeout=60000)
+                          result["direct_status"] = r.status
+                          result["direct_content_type"] = r.headers.get("content-type")
+                          result["direct_content_length"] = r.headers.get("content-length")
+                          if r.ok:
+                              path = "downloaded/BV1DgKP6CEJH.mp4"
+                              with open(path, "wb") as f:
+                                  f.write(r.body())
+                              result["download_mode"] = "copied_link_request"
+                              result["saved_path"] = path
+                              result["size_bytes"] = os.path.getsize(path)
                   except Exception as e:
-                      result["download_error"] = repr(e)
+                      result["copy_link_error"] = repr(e)
+
+                  if not result.get("saved_path"):
                       try:
-                          context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://bilidl.com")
-                          page.get_by_role("button", name=re.compile("^Copy link$", re.I)).first.click()
-                          page.wait_for_timeout(500)
-                          link = page.evaluate("navigator.clipboard.readText()")
-                          result["copied_link"] = link
-                          with open("browser-artifacts/download-link.txt", "w", encoding="utf-8") as f:
-                              f.write(link)
-                          if link and link.startswith("http"):
-                              r = context.request.get(link, headers={"Referer":"https://bilidl.com/"}, timeout=60000)
-                              result["fallback_status"] = r.status
-                              if r.ok:
-                                  path = "downloaded/BV1DgKP6CEJH.mp4"
-                                  with open(path, "wb") as f:
-                                      f.write(r.body())
-                                  result["download_mode"] = "copied_link_request"
-                                  result["saved_path"] = path
-                                  result["size_bytes"] = os.path.getsize(path)
+                          with page.expect_download(timeout=30000) as info:
+                              page.locator('button[aria-label^="Download:"]').first.click(force=True)
+                          download = info.value
+                          suggested = download.suggested_filename or "video.mp4"
+                          safe = re.sub(r'[^A-Za-z0-9._-]+', '_', suggested)
+                          path = os.path.join("downloaded", safe)
+                          download.save_as(path)
+                          result["download_mode"] = "browser_download"
+                          result["suggested_filename"] = suggested
+                          result["saved_path"] = path
+                          result["size_bytes"] = os.path.getsize(path)
                       except Exception as e2:
-                          result["fallback_error"] = repr(e2)
+                          result["download_error"] = repr(e2)
               except Exception as e:
                   result["fatal_error"] = repr(e)
                   try:
