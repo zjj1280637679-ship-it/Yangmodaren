@@ -26,7 +26,7 @@ jobs:
           import json, os, re
           from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-          target = "https://www.bilibili.com/video/BV1DgKP6CEJH"
+          target = "https://b23.tv/GWkiBs8"
           result = {"target": target, "site": "https://bilidl.com/"}
 
           with sync_playwright() as p:
@@ -58,7 +58,7 @@ jobs:
                           result["direct_content_type"] = r.headers.get("content-type")
                           result["direct_content_length"] = r.headers.get("content-length")
                           if r.ok:
-                              path = "downloaded/BV1DgKP6CEJH.mp4"
+                              path = "downloaded/GWkiBs8.mp4"
                               with open(path, "wb") as f:
                                   f.write(r.body())
                               result["download_mode"] = "copied_link_request"
