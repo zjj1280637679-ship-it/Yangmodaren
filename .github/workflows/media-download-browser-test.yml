@@ -1,0 +1,109 @@
+name: Browser downloader smoke test
+
+on:
+  push:
+    branches:
+      - media-download-smoke-test
+
+permissions:
+  contents: read
+
+jobs:
+  browser-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install Playwright Chromium
+        run: |
+          python -m pip install -U playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Test BiliDL in real browser
+        shell: bash
+        run: |
+          cat > /tmp/test_bilidl.py <<'PY'
+          import json, os, re, time
+          from playwright.sync_api import sync_playwright
+
+          url = "https://www.bilibili.com/video/BV1DgKP6CEJH"
+          out = {"target": url, "site": "https://bilidl.com/", "events": []}
+          os.makedirs("browser-artifacts", exist_ok=True)
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page(viewport={"width": 1440, "height": 1000})
+              page.on("console", lambda msg: out["events"].append({"console": msg.text}))
+              try:
+                  resp = page.goto("https://bilidl.com/", wait_until="domcontentloaded", timeout=60000)
+                  out["site_status"] = resp.status if resp else None
+                  out["title_before"] = page.title()
+                  page.screenshot(path="browser-artifacts/01-home.png", full_page=True)
+
+                  inp = page.locator('input[placeholder*="Bilibili"], input[placeholder*="video URL"], input[type="url"], input[type="text"]').first
+                  out["input_count"] = page.locator('input').count()
+                  inp.fill(url)
+
+                  btn = page.get_by_role("button", name=re.compile("Analyze", re.I)).first
+                  out["analyze_button_count"] = page.get_by_role("button", name=re.compile("Analyze", re.I)).count()
+                  btn.click()
+                  page.wait_for_timeout(8000)
+                  try:
+                      page.wait_for_load_state("networkidle", timeout=15000)
+                  except Exception:
+                      pass
+
+                  out["title_after"] = page.title()
+                  out["current_url"] = page.url
+                  body_text = page.locator("body").inner_text(timeout=10000)
+                  out["body_excerpt"] = body_text[:12000]
+
+                  anchors = []
+                  for a in page.locator("a").all():
+                      try:
+                          anchors.append({"text": a.inner_text()[:300], "href": a.get_attribute("href")})
+                      except Exception:
+                          pass
+                  out["anchors"] = anchors[:300]
+
+                  buttons = []
+                  for b in page.locator("button").all():
+                      try:
+                          buttons.append(b.inner_text()[:300])
+                      except Exception:
+                          pass
+                  out["buttons"] = buttons[:200]
+
+                  media = []
+                  for item in anchors:
+                      href = item.get("href") or ""
+                      if re.search(r'(?i)(\.mp4|\.m4a|download|media|video)', href):
+                          media.append(item)
+                  out["media_candidates"] = media
+
+                  page.screenshot(path="browser-artifacts/02-after-analyze.png", full_page=True)
+                  with open("browser-artifacts/page.html", "w", encoding="utf-8") as f:
+                      f.write(page.content())
+              except Exception as e:
+                  out["error"] = repr(e)
+                  try:
+                      page.screenshot(path="browser-artifacts/error.png", full_page=True)
+                  except Exception:
+                      pass
+              finally:
+                  with open("browser-artifacts/result.json", "w", encoding="utf-8") as f:
+                      json.dump(out, f, ensure_ascii=False, indent=2)
+                  browser.close()
+
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
+          python /tmp/test_bilidl.py | tee browser-artifacts/console.txt
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilidl-browser-smoke-test
+          path: browser-artifacts/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 1
