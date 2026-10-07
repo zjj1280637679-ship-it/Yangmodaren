@@ -1,0 +1,105 @@
+name: Browser actual video download
+
+on:
+  push:
+    branches:
+      - media-download-smoke-test
+
+permissions:
+  contents: read
+
+jobs:
+  browser-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install Playwright Chromium
+        run: |
+          python -m pip install -U playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Download via BiliDL
+        shell: bash
+        run: |
+          mkdir -p browser-artifacts downloaded
+          cat > /tmp/download_bilidl.py <<'PY'
+          import json, os, re
+          from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+          target = "https://www.bilibili.com/video/BV1DgKP6CEJH"
+          result = {"target": target, "site": "https://bilidl.com/"}
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(accept_downloads=True)
+              page = context.new_page()
+              try:
+                  resp = page.goto("https://bilidl.com/", wait_until="domcontentloaded", timeout=60000)
+                  result["site_status"] = resp.status if resp else None
+                  page.locator('input[placeholder*="Bilibili"], input[placeholder*="video URL"], input[type="url"], input[type="text"]').first.fill(target)
+                  page.get_by_role("button", name=re.compile("^Analyze$", re.I)).first.click()
+                  page.get_by_text("Ready to watch", exact=False).wait_for(timeout=30000)
+                  result["analysis_text"] = page.locator("body").inner_text()[:5000]
+                  page.screenshot(path="browser-artifacts/analyzed.png", full_page=True)
+
+                  try:
+                      with page.expect_download(timeout=60000) as info:
+                          page.get_by_role("button", name=re.compile("^Download$", re.I)).first.click()
+                      download = info.value
+                      suggested = download.suggested_filename or "video.mp4"
+                      safe = re.sub(r'[^A-Za-z0-9._-]+', '_', suggested)
+                      path = os.path.join("downloaded", safe)
+                      download.save_as(path)
+                      result["download_mode"] = "browser_download"
+                      result["suggested_filename"] = suggested
+                      result["saved_path"] = path
+                      result["size_bytes"] = os.path.getsize(path)
+                  except Exception as e:
+                      result["download_error"] = repr(e)
+                      try:
+                          context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://bilidl.com")
+                          page.get_by_role("button", name=re.compile("^Copy link$", re.I)).first.click()
+                          page.wait_for_timeout(500)
+                          link = page.evaluate("navigator.clipboard.readText()")
+                          result["copied_link"] = link
+                          with open("browser-artifacts/download-link.txt", "w", encoding="utf-8") as f:
+                              f.write(link)
+                          if link and link.startswith("http"):
+                              r = context.request.get(link, headers={"Referer":"https://bilidl.com/"}, timeout=60000)
+                              result["fallback_status"] = r.status
+                              if r.ok:
+                                  path = "downloaded/BV1DgKP6CEJH.mp4"
+                                  with open(path, "wb") as f:
+                                      f.write(r.body())
+                                  result["download_mode"] = "copied_link_request"
+                                  result["saved_path"] = path
+                                  result["size_bytes"] = os.path.getsize(path)
+                      except Exception as e2:
+                          result["fallback_error"] = repr(e2)
+              except Exception as e:
+                  result["fatal_error"] = repr(e)
+                  try:
+                      page.screenshot(path="browser-artifacts/error.png", full_page=True)
+                  except Exception:
+                      pass
+              finally:
+                  with open("browser-artifacts/result.json", "w", encoding="utf-8") as f:
+                      json.dump(result, f, ensure_ascii=False, indent=2)
+                  print(json.dumps(result, ensure_ascii=False, indent=2))
+                  browser.close()
+          PY
+          python /tmp/download_bilidl.py | tee browser-artifacts/console.txt
+          find downloaded -maxdepth 1 -type f -printf '%f %s bytes\n' | tee browser-artifacts/files.txt
+          test -n "$(find downloaded -maxdepth 1 -type f -print -quit)"
+
+      - name: Upload downloaded video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-downloaded-video
+          path: |
+            downloaded/
+            browser-artifacts/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 1
