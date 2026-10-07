@@ -1,0 +1,52 @@
+name: Media download smoke test
+
+on:
+  push:
+    branches:
+      - media-download-smoke-test
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Show runner network basics
+        run: |
+          set -x
+          python --version
+          curl -I -L --max-time 20 https://b23.tv/IqJUj1f || true
+
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install -U yt-dlp
+
+      - name: Download Bilibili video
+        id: download
+        shell: bash
+        run: |
+          mkdir -p downloads
+          set +e
+          yt-dlp -v             -f "bv*+ba/b"             --merge-output-format mp4             --write-info-json             -o "downloads/%(id)s.%(ext)s"             "https://www.bilibili.com/video/BV1DgKP6CEJH"             2>&1 | tee yt-dlp.log
+          code=${PIPESTATUS[0]}
+          echo "yt_dlp_exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$code" > download-result.txt
+          find downloads -maxdepth 1 -type f -printf '%f %s bytes\n' | tee -a download-result.txt
+          exit 0
+
+      - name: Upload result and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-smoke-test
+          path: |
+            downloads/
+            yt-dlp.log
+            download-result.txt
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 1
